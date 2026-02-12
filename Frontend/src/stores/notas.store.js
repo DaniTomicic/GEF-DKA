@@ -30,13 +30,16 @@ export const useNotasStore = defineStore("notas", () => {
 
   async function fetchGrado(page = 1, perPage = 5, forceRefresh = false) {
     const cacheKey = getCacheKey(page, perPage);
-    
-    // Si not forceRefresh, intenta usar cache
+    const CACHE_TTL = 5 * 60 * 1000; // 5 minutos
+
+    // Si not forceRefresh, intenta usar cache y comprobar TTL
     if (!forceRefresh && sessionStorage.getItem(cacheKey)) {
       try {
         const parsed = JSON.parse(sessionStorage.getItem(cacheKey));
-        setDatosGrado({ alumnosData: parsed.alumnos, asignaturasData: parsed.asignaturas, grado: parsed.grado, last_page: parsed.last_page });
-        return;
+        if (parsed?.ts && (Date.now() - parsed.ts) < CACHE_TTL) {
+          setDatosGrado({ alumnosData: parsed.alumnos, asignaturasData: parsed.asignaturas, grado: parsed.grado, last_page: parsed.last_page });
+          return;
+        }
       } catch (e) {
         // continue to fetch
       }
@@ -56,7 +59,7 @@ export const useNotasStore = defineStore("notas", () => {
     setDatosGrado({ alumnosData, asignaturasData, grado, last_page });
 
     try {
-      sessionStorage.setItem(cacheKey, JSON.stringify({ alumnos: alumnosData, asignaturas: asignaturasData, grado, last_page }));
+      sessionStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), alumnos: alumnosData, asignaturas: asignaturasData, grado, last_page }));
     } catch (e) {
       // ignore storage errors
     }
@@ -68,6 +71,25 @@ export const useNotasStore = defineStore("notas", () => {
       sessionStorage.removeItem(cacheKey);
     } catch (e) {}
   }
+
+  // Periodic cleanup for grado caches
+  (function startNotasCacheCleanup(){
+    const CACHE_TTL = 5 * 60 * 1000;
+    setInterval(() => {
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i);
+        if (!key || !key.startsWith('grado_page_')) continue;
+        try {
+          const parsed = JSON.parse(sessionStorage.getItem(key));
+          if (!parsed?.ts || (Date.now() - parsed.ts) > CACHE_TTL) {
+            sessionStorage.removeItem(key);
+          }
+        } catch (e) {
+          sessionStorage.removeItem(key);
+        }
+      }
+    }, CACHE_TTL);
+  })();
 
   return {
     alumnos,

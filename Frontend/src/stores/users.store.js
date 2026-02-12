@@ -38,15 +38,14 @@ export const useUsersStore = defineStore('users', () => {
 
       try {
         const parsed = JSON.parse(sessionStorage.getItem(key));
-        if (parsed?.users) {
-          const filteredUsers = parsed.users.filter(u => u.id !== userId);
-        //   En caso de solo encontrar una linea borra la key, si no lo hace varias veces
-          if (filteredUsers.length !== parsed.users.length) {
-            if (filteredUsers.length > 0) {
-              sessionStorage.setItem(key, JSON.stringify({ ...parsed, users: filteredUsers }));
-            } else {
-              sessionStorage.removeItem(key);
-            }
+        const usersList = parsed?.users || parsed || [];
+        const filteredUsers = usersList.filter(u => u.id !== userId);
+        if (filteredUsers.length !== usersList.length) {
+          const newVal = { ...(parsed?.ts ? { ts: parsed.ts } : {}), users: filteredUsers, totalPages: parsed?.totalPages };
+          if (filteredUsers.length > 0) {
+            sessionStorage.setItem(key, JSON.stringify(newVal));
+          } else {
+            sessionStorage.removeItem(key);
           }
         }
       } catch {
@@ -59,13 +58,20 @@ export const useUsersStore = defineStore('users', () => {
   async function fetchUsers(page = 1, filters = {}) {
     currentPage.value = page;
     const cacheKey = getCacheKey(page, filters);
-    
-    // Busca si existen keys y en caso de que si lo sacan a la view, si no hace consulta a BD
+    const CACHE_TTL = 5 * 60 * 1000; // 5 minutos
+
+    // Busca si existen keys y si no están caducadas úsalas
     if (sessionStorage.getItem(cacheKey)) {
-        const parsed = JSON.parse(sessionStorage.getItem(cacheKey));
-        users.value = parsed.users;
-        totalPages.value = parsed.totalPages;
-        return;
+        try {
+          const parsed = JSON.parse(sessionStorage.getItem(cacheKey));
+          if (parsed?.ts && (Date.now() - parsed.ts) < CACHE_TTL) {
+            users.value = parsed.users || [];
+            totalPages.value = parsed.totalPages || 1;
+            return;
+          }
+        } catch (e) {
+          // fallthrough
+        }
     }
 
     const response = await api.get('/api/users', {
@@ -85,20 +91,41 @@ export const useUsersStore = defineStore('users', () => {
     users.value = userResponse;
     totalPages.value = lastPage;
 
-    sessionStorage.setItem(cacheKey, JSON.stringify({ users: userResponse, totalPages: lastPage }));
+    try {
+      sessionStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), users: userResponse, totalPages: lastPage }));
+    } catch (e) {}
   }
 
   // Crea o actualiza el user en base a que si en la data hay o no id
   async function guardarUsuario(data, filters = {}) {
     try {
         if (data.id) {
-            await api.put(`/api/users/${data.id}`, data);
+            const response = await api.put(`/api/users/${data.id}`, data);
+            // Update in-memory list if the edited user is present
+            const idx = users.value.findIndex(u => u.id === data.id);
+            if (idx !== -1) {
+              users.value[idx] = response.data;
+            }
+            // Update cached pages where this user appears
+            for (let i = 0; i < sessionStorage.length; i++) {
+              const key = sessionStorage.key(i);
+              if (!key || !key.startsWith('users_page_')) continue;
+              try {
+                const parsed = JSON.parse(sessionStorage.getItem(key));
+                const list = parsed?.users || parsed || [];
+                const j = list.findIndex(u => u.id === data.id);
+                if (j !== -1) {
+                  list[j] = response.data;
+                  const newVal = { ...(parsed?.ts ? { ts: parsed.ts } : {}), users: list, totalPages: parsed?.totalPages };
+                  sessionStorage.setItem(key, JSON.stringify(newVal));
+                }
+              } catch (e) {}
+            }
         } else {
             await api.post('/api/users', data);
+            // for creation, refresh the current page to include the new user
+            await fetchUsers(currentPage.value, filters);
         }
-        // Actualiza la cache
-        removeUserFromCache(data.id);
-        await fetchUsers(currentPage.value, filters);
     } catch (e) {
         console.error(e);
         throw new Error(e.response?.data?.message || 'Error al guardar usuario');
@@ -123,6 +150,25 @@ export const useUsersStore = defineStore('users', () => {
   function getUserById(id) {
     return users.value.find(u => u.id === id) || null;
   }
+
+  // Periodic cleanup for users_page caches (remove expired)
+  (function startUsersCacheCleanup(){
+    const CACHE_TTL = 5 * 60 * 1000;
+    setInterval(() => {
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i);
+        if (!key || !key.startsWith('users_page_')) continue;
+        try {
+          const parsed = JSON.parse(sessionStorage.getItem(key));
+          if (!parsed?.ts || (Date.now() - parsed.ts) > CACHE_TTL) {
+            sessionStorage.removeItem(key);
+          }
+        } catch (e) {
+          sessionStorage.removeItem(key);
+        }
+      }
+    }, CACHE_TTL);
+  })();
 
   return { users, currentPage, totalPages, perPage,  currentUser, fetchUsers, getUserById, guardarUsuario, handleConfirmDelete, getCacheKey, removeUserFromCache, initCurrentUser };
 });

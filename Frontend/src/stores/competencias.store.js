@@ -4,14 +4,17 @@ import api from '@/services/api.js';
 
 export const useCompetenciasStore = defineStore('competencias', () => {
   const lista = ref([]);
+  const CACHE_KEY = 'competencias_list_v1';
+  const CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 
-  const cacheKey = 'competencias_list_v1';
-
-  async function fetchAll() {
-    if (sessionStorage.getItem(cacheKey)) {
+  async function fetchAll(force = false) {
+    if (!force && sessionStorage.getItem(CACHE_KEY)) {
       try {
-        lista.value = JSON.parse(sessionStorage.getItem(cacheKey));
-        return;
+        const parsed = JSON.parse(sessionStorage.getItem(CACHE_KEY));
+        if (parsed?.ts && (Date.now() - parsed.ts) < CACHE_TTL) {
+          lista.value = parsed.data || [];
+          return;
+        }
       } catch (e) {
         // fallthrough
       }
@@ -21,9 +24,14 @@ export const useCompetenciasStore = defineStore('competencias', () => {
     lista.value = res.data || [];
 
     try {
-      sessionStorage.setItem(cacheKey, JSON.stringify(lista.value));
+      sessionStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), data: lista.value }));
     } catch (e) {}
   }
+
+  // Auto-refresh every CACHE_TTL
+  setInterval(() => {
+    fetchAll(true).catch(() => {});
+  }, CACHE_TTL);
 
   return { lista, fetchAll };
 });

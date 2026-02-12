@@ -4,6 +4,7 @@ import api from '@/services/api'
 
 export const useTutoresStore = defineStore('tutores', () => {
   const alumnos = ref([])
+  const CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 
   async function fetchAlumnosTutor(tutorId, tipo = 'tutor', forceRefresh = false) {
     const cacheKey = `tutor_${tutorId}_alumnos_${tipo}`
@@ -12,8 +13,15 @@ export const useTutoresStore = defineStore('tutores', () => {
     if (!forceRefresh) {
       const cached = sessionStorage.getItem(cacheKey)
       if (cached) {
-        alumnos.value = JSON.parse(cached)
-        return alumnos.value
+        try {
+          const parsed = JSON.parse(cached)
+          if (parsed?.ts && (Date.now() - parsed.ts) < CACHE_TTL) {
+            alumnos.value = parsed.data || []
+            return alumnos.value
+          }
+        } catch (e) {
+          // fallthrough
+        }
       }
     }
 
@@ -25,8 +33,10 @@ export const useTutoresStore = defineStore('tutores', () => {
     const response = await api.get(endpoint)
     alumnos.value = response.data
     
-    // Guardar en cache
-    sessionStorage.setItem(cacheKey, JSON.stringify(response.data))
+    // Guardar en cache con timestamp
+    try {
+      sessionStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), data: response.data }))
+    } catch (e) {}
     
     return alumnos.value
   }
@@ -40,6 +50,22 @@ export const useTutoresStore = defineStore('tutores', () => {
     invalidateCache(tutorId, 'tutor')
     invalidateCache(tutorId, 'clase')
   }
+
+  // Periodic cleanup: remove expired tutor cache entries every CACHE_TTL
+  setInterval(() => {
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const key = sessionStorage.key(i)
+      if (!key || !key.startsWith('tutor_')) continue
+      try {
+        const parsed = JSON.parse(sessionStorage.getItem(key))
+        if (!parsed?.ts || (Date.now() - parsed.ts) > CACHE_TTL) {
+          sessionStorage.removeItem(key)
+        }
+      } catch (e) {
+        sessionStorage.removeItem(key)
+      }
+    }
+  }, CACHE_TTL)
 
   return {
     alumnos,
